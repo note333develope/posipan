@@ -325,7 +325,8 @@ svg{flex-shrink:0}
     </a>
     <nav class="tabs" id="boardNav">
       <button class="tab active" data-nav="free">자유게시판</button>
-      <button class="tab" data-nav="raid">레이드게시판</button>
+      <button class="tab" data-nav="raid">레이드 모집</button>
+      <button class="tab" data-nav="trade">교환 모집</button>
       <button class="tab" data-nav="info">정보게시판</button>
       <button class="tab" data-nav="qna">문의게시판</button>
     </nav>
@@ -432,6 +433,7 @@ svg{flex-shrink:0}
       </label>
       <label class="f-label" id="wCatWrap">말머리
         <div class="field"><select id="wCat">
+          <option>포켓몬 고</option>
           <option>포켓몬 외전</option>
           <option>포켓몬스터</option>
           <option>포켓몬 카드</option>
@@ -484,7 +486,6 @@ svg{flex-shrink:0}
   </div>
 </div>
 
-<!-- 운영팀 답변 모달 (관리자 전용) -->
 <div class="overlay" id="answerModal">
   <div class="modal small">
     <div class="modal-head"><h3>운영팀 답변</h3><button class="modal-x" data-close><span data-ic="x" data-ics="16"></span></button></div>
@@ -500,7 +501,6 @@ svg{flex-shrink:0}
   </div>
 </div>
 
-<!-- 운영 관리 모달 (관리자 전용) -->
 <div class="overlay" id="adminModal">
   <div class="modal small">
     <div class="modal-head"><h3>운영 관리</h3><button class="modal-x" data-close><span data-ic="x" data-ics="16"></span></button></div>
@@ -564,6 +564,10 @@ function relTime(v){
   const t = toDate(v), p = n => String(n).padStart(2,'0');
   return p(t.getMonth()+1) + '.' + p(t.getDate());
 }
+function permMsg(err, fallback){
+  return (err && err.code === 'permission-denied')
+    ? '권한이 없어요 — 본인 글만 가능하거나 차단된 계정이에요' : fallback;
+}
 
 /* ═══ 인라인 SVG 아이콘 ═══ */
 const I = {
@@ -591,11 +595,12 @@ const I = {
 };
 const ic = (n, s) => '<svg width="'+(s||17)+'" height="'+(s||17)+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(I[n]||'')+'</svg>';
 
-/* ═══ 게시판 정의 ═══ */
-const CATS = ['포켓몬 외전','포켓몬스터','포켓몬 카드'];
+/* ═══ 게시판 정의 (레이드 모집 이름 변경 + 교환 모집 추가) ═══ */
+const CATS = ['포켓몬 고','포켓몬 외전','포켓몬스터','포켓몬 카드'];
 const BOARDS = {
   free:{ name:'자유게시판' },
-  raid:{ name:'레이드게시판' },
+  raid:{ name:'레이드 모집' },
+  trade:{ name:'교환 모집' },
   info:{ name:'정보게시판' },
   qna: { name:'문의게시판' },
 };
@@ -609,12 +614,12 @@ function boardFilters(){
 }
 function matchFilter(p){
   const f = state.filter;
-  if(f==='mine')  return p.authorUid === state.uid;
+  if(f==='mine')  return !!state.user && p.authorUid === state.uid;
   if(f==='marks') return marks.includes(p.id);
   if(state.board==='qna') return f==='all' || p.status===f;
   return f==='all' || p.category===f;
 }
-const LOCAL = { free:[], raid:[], info:[], qna:[] };
+const LOCAL = { free:[], raid:[], trade:[], info:[], qna:[] };
 function findLocal(id){ for(const k in LOCAL){ const p = LOCAL[k].find(x=>x.id===id); if(p) return p; } return null; }
 
 /* ═══ 상태 ═══ */
@@ -679,8 +684,6 @@ async function ensureFB(){
     return false;
   }
 }
-
-/* 관리자/차단 상태 확인 */
 async function checkAuthExtras(){
   state.isAdmin = false;
   state.banned = false;
@@ -692,12 +695,10 @@ async function checkAuthExtras(){
     state.banned = (await fb.getDoc(fb.doc(fb.db,'banned', auth.currentUser.uid))).exists();
     if(state.banned) toast('이 계정은 차단되어 있어요','warn');
   }catch(e){}
-  /* 관리자면 열려있는 글에 관리 버튼 다시 그리기 */
   if(state.isAdmin && !$('#postView').hidden && window._currentPost){
     renderPost(state.board, window._currentPost.id);
   }
 }
-
 function onAuthChanged(user){
   const newUid = user ? user.uid : null;
   const changed = newUid !== state.uid;
@@ -819,10 +820,13 @@ async function updatePost(id, patch){
   if(fb) await fb.updateDoc(fb.doc(fb.db,'posts',id), patch);
   else Object.assign(findLocal(id), patch);
 }
+/* ★ 삭제 버그 수정: 댓글 삭제는 최선형(일부 실패해도 글 삭제 진행) */
 async function deletePost(p){
   if(fb){
-    const cs = await fb.getDocs(fb.collection(fb.db,'posts',p.id,'comments'));
-    await Promise.all(cs.docs.map(d=>fb.deleteDoc(d.ref)));
+    try{
+      const cs = await fb.getDocs(fb.collection(fb.db,'posts',p.id,'comments'));
+      await Promise.all(cs.docs.map(d => fb.deleteDoc(d.ref).catch(()=>{})));
+    }catch(e){ console.warn('댓글 정리 스킵:', e); }
     await fb.deleteDoc(fb.doc(fb.db,'posts',p.id));
   } else {
     const arr = LOCAL[p.board]; const i = arr.findIndex(x=>x.id===p.id);
@@ -916,7 +920,7 @@ function rowHTML(p, num){
   if(p.pinned) pre = '<span class="cat-pre notice">[공지]</span>';
   else if(state.board==='qna') pre = '<span class="cat-pre ' + (p.status==='done'?'done':'') + '">[' + (p.status==='done'?'완료':'대기') + ']</span>';
   else pre = '<span class="cat-pre">[' + esc(p.category||'') + ']</span>';
-  const secret = p.secret && p.authorUid !== state.uid;
+  const secret = p.secret && p.authorUid !== state.uid && !state.isAdmin;
   const title = secret ? '<span class="t-title" style="color:var(--muted)">비밀글입니다</span>'
     : '<span class="t-title' + (p.pinned?' pinned':'') + '">' + esc(p.title) + '</span>';
   const lock = p.secret ? '<span style="color:var(--muted);display:inline-flex">' + ic('lock',13) + '</span>' : '';
@@ -995,12 +999,12 @@ async function renderPost(board, id){
   const likes = (p.likedBy||[]).length;
   const liked = (p.likedBy||[]).includes(state.uid);
   const marked = marks.includes(p.id);
-  const mine = p.authorUid === state.uid;
-  const canManage = mine || state.isAdmin;
+  /* ★ 버그 수정: 로그인 상태일 때만 본인 글 판정 */
+  const mine = !!state.user && p.authorUid === state.uid;
+  const canManage = mine || (state.isAdmin && !!state.user);
 
-  /* 관리자 전용 버튼 */
   let adminBtns = '';
-  if(state.isAdmin){
+  if(state.isAdmin && state.user){
     adminBtns = '<button class="pa-btn" id="pinBtn">' + ic('pin',14) + (p.pinned ? '고정 해제' : '고정') + '</button>';
     if(board==='qna'){
       adminBtns += '<button class="pa-btn" id="answerBtn">' + ic('send',14) + (p.answer ? '답변 수정' : '답변 달기') + '</button>';
@@ -1033,14 +1037,17 @@ async function renderPost(board, id){
     + adminBtns
     + '</div></article>'
     + '<section class="comments"><div class="comment-head">댓글<span>' + comments.length + '</span></div>'
-    + (comments.length ? comments.map(c=>
-        '<div class="comment"><span class="avatar sm" style="background:' + avColor(c.author) + '">' + avInitial(c.author) + '</span>'
+    + (comments.length ? comments.map(c=>{
+        /* 댓글 삭제: 본인 댓글, 관리자, 글쓴이(내 글의 댓글) 가능 */
+        const canDelC = state.isAdmin || (!!state.user && (c.authorUid === state.uid || p.authorUid === state.uid));
+        return '<div class="comment"><span class="avatar sm" style="background:' + avColor(c.author) + '">' + avInitial(c.author) + '</span>'
         + '<div class="c-main"><div class="c-head"><b>' + esc(c.author) + '</b>'
         + (c.authorUid === p.authorUid ? '<span class="op-badge">글쓴이</span>' : '')
         + '<time>' + relTime(c.createdAt) + '</time></div>'
         + '<p>' + esc(c.body) + '</p></div>'
-        + ((c.authorUid === state.uid || state.isAdmin) ? '<button class="c-del" data-cdel="' + esc(c.cid) + '" data-cuid="' + esc(c.authorUid||'') + '" data-cnick="' + esc(c.author||'') + '" title="댓글 삭제">' + ic('x',13) + '</button>' : '')
-        + '</div>').join('')
+        + (canDelC ? '<button class="c-del" data-cdel="' + esc(c.cid) + '" title="댓글 삭제">' + ic('x',13) + '</button>' : '')
+        + '</div>';
+      }).join('')
       : '<div class="comment-none">등록된 댓글이 없어요</div>')
     + '<div class="comment-form">'
     + (state.user ? '<span class="avatar sm" style="background:' + avColor(state.user) + '">' + avInitial(state.user) + '</span>' : '')
@@ -1149,14 +1156,19 @@ let debounce;
   if(e.target.closest('#delBtn')){
     const p = window._currentPost;
     if(await confirmAsk('글을 삭제할까요? 삭제한 글은 복구할 수 없어요.')){
-      try{ await deletePost(p); }catch(err){ toast('삭제에 실패했어요','warn'); return; }
+      try{ await deletePost(p); }
+      catch(err){
+        console.warn('삭제 실패:', err);
+        toast(permMsg(err, '삭제에 실패했어요'), 'warn');
+        return;
+      }
       toast('글을 삭제했어요');
       location.hash = '#' + state.board;
     }
     return;
   }
 
-  /* ── 관리자 기능 ── */
+  /* 관리자 기능 */
   if(e.target.closest('#pinBtn')){
     const p = window._currentPost;
     try{
@@ -1165,7 +1177,7 @@ let debounce;
       p.pinned = newPin;
       renderPost(state.board, p.id);
       toast(newPin ? '글을 고정했어요' : '고정을 해제했어요');
-    }catch(err){ toast('고정 처리에 실패했어요','warn'); }
+    }catch(err){ toast(permMsg(err, '고정 처리에 실패했어요'),'warn'); }
     return;
   }
   if(e.target.closest('#answerBtn')){
@@ -1180,7 +1192,7 @@ let debounce;
       try{
         await fb.setDoc(fb.doc(fb.db,'banned', p.authorUid), { nick: p.author, at: fb.serverTimestamp() });
         toast(p.author + '님을 차단했어요');
-      }catch(err){ toast('차단에 실패했어요','warn'); }
+      }catch(err){ toast(permMsg(err, '차단에 실패했어요'),'warn'); }
     }
     return;
   }
@@ -1192,7 +1204,8 @@ let debounce;
       renderPost(state.board, window._currentPost.id);
       toast('댓글을 삭제했어요');
     }catch(err){
-      toast('댓글 삭제에 실패했어요','warn');
+      console.warn('댓글 삭제 실패:', err);
+      toast(permMsg(err, '댓글 삭제에 실패했어요'), 'warn');
     }
     return;
   }
@@ -1211,7 +1224,7 @@ async function submitComment(){
   try{
     await addComment(window._currentPost.id, { author:state.user, authorUid:state.uid, body:text });
   }catch(err){
-    toast((err && err.code==='permission-denied') ? '차단된 계정이거나 권한이 없어요' : '댓글 등록에 실패했어요','warn');
+    toast(permMsg(err, '댓글 등록에 실패했어요'), 'warn');
     return;
   }
   renderPost(state.board, window._currentPost.id);
@@ -1265,7 +1278,7 @@ function openEdit(p){
     const patch = { title, body, category: cat };
     if(board==='qna') patch.secret = $('#wSecret').checked;
     try{ await updatePost(editingId, patch); }
-    catch(err){ toast('수정에 실패했어요','warn'); return; }
+    catch(err){ toast(permMsg(err, '수정에 실패했어요'),'warn'); return; }
     closeModal($('#wSubmit'));
     resetWriteForm();
     toast('글이 수정됐어요');
@@ -1277,7 +1290,7 @@ function openEdit(p){
   let newId;
   try{ newId = await createPost(data); }
   catch(err){
-    toast((err && err.code==='permission-denied') ? '차단된 계정이거나 권한이 없어요' : '글 등록에 실패했어요','warn');
+    toast(permMsg(err, '글 등록에 실패했어요'), 'warn');
     return;
   }
   closeModal($('#wSubmit'));
@@ -1297,10 +1310,10 @@ function openEdit(p){
     $('#answerInput').value = '';
     toast('답변이 등록됐어요');
     renderPost(state.board, p.id);
-  }catch(err){ toast('답변 등록에 실패했어요','warn'); }
+  }catch(err){ toast(permMsg(err, '답변 등록에 실패했어요'),'warn'); }
 });
 
-/* ═══ 운영 관리 모달 (관리자) ═══ */
+/* ═══ 운영 관리 (관리자) ═══ */
 function openAdmin(){
   $('#bannedList').innerHTML = '<div class="loading"><div class="spin"></div></div>';
   openModal('#adminModal');
@@ -1382,6 +1395,7 @@ async function guestLogin(){
   const ready = await ensureFB();
   if(!ready) return;
   try{
+    /* 이미 익명 세션이 있으면 같은 UID 재사용 (재로그인 시 글 관리 권한 유지) */
     await withTimeout(fb.au.signInAnonymously(auth), 8000, '게스트 로그인');
     state.uid = auth.currentUser ? auth.currentUser.uid : state.uid;
   }catch(e){
@@ -1405,15 +1419,20 @@ function renderUser(){
   }
 }
 
+/* ★ 로그아웃 — 게스트는 익명 UID 유지(같은 기기에서 내 글 관리 가능), Google 계정만 완전 로그아웃 */
 function doLogout(){
   state.user = null;
   state.isAdmin = false;
   state.banned = false;
   localStorage.removeItem('pp_nick');
   renderUser();
-  if(auth && fb){
-    state.uid = null;
-    fb.au.signOut(auth).catch(function(){});
+  if(auth && fb && auth.currentUser){
+    if(auth.currentUser.isAnonymous){
+      state.uid = auth.currentUser.uid; /* 익명 세션 유지 */
+    } else {
+      state.uid = null;
+      fb.au.signOut(auth).catch(function(){});
+    }
   } else {
     state.uid = localUid();
   }
@@ -1425,7 +1444,6 @@ function doLogout(){
   toast('로그아웃했어요','warn');
 }
 
-/* 프로필 드롭다운 — UID 복사 / 운영 관리 / 로그아웃 */
  $('#userChip').addEventListener('click', function(e){
   e.stopPropagation();
   const ex = document.querySelector('.logout-dd');
@@ -1453,7 +1471,7 @@ function doLogout(){
       catch(err){ toast('UID: ' + state.uid); }
     });
   }
-  if(state.isAdmin){
+  if(state.isAdmin && state.user){
     addItem('shield', '운영 관리', openAdmin);
   }
   addItem('logout', '로그아웃', doLogout);
