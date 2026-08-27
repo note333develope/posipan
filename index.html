@@ -566,7 +566,11 @@ function relTime(v){
 }
 function permMsg(err, fallback){
   return (err && err.code === 'permission-denied')
-    ? '권한이 없어요 — 본인 글만 가능하거나 차단된 계정이에요' : fallback;
+    ? '권한이 없어요 — 로그인 상태와 본인 글 여부를 확인해주세요' : fallback;
+}
+/* ★ 디버깅: 모든 Firestore 에러를 콘솔에 상세 기록 */
+function logErr(where, err){
+  console.warn('[POSIPAN:' + where + ']', (err && err.code) || '', err && err.message || err);
 }
 
 /* ═══ 인라인 SVG 아이콘 ═══ */
@@ -595,7 +599,7 @@ const I = {
 };
 const ic = (n, s) => '<svg width="'+(s||17)+'" height="'+(s||17)+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(I[n]||'')+'</svg>';
 
-/* ═══ 게시판 정의 (레이드 모집 이름 변경 + 교환 모집 추가) ═══ */
+/* ═══ 게시판 정의 ═══ */
 const CATS = ['포켓몬 고','포켓몬 외전','포켓몬스터','포켓몬 카드'];
 const BOARDS = {
   free:{ name:'자유게시판' },
@@ -614,7 +618,7 @@ function boardFilters(){
 }
 function matchFilter(p){
   const f = state.filter;
-  if(f==='mine')  return !!state.user && p.authorUid === state.uid;
+  if(f==='mine')  return !!state.user && !!state.uid && p.authorUid === state.uid;
   if(f==='marks') return marks.includes(p.id);
   if(state.board==='qna') return f==='all' || p.status===f;
   return f==='all' || p.category===f;
@@ -622,7 +626,7 @@ function matchFilter(p){
 const LOCAL = { free:[], raid:[], trade:[], info:[], qna:[] };
 function findLocal(id){ for(const k in LOCAL){ const p = LOCAL[k].find(x=>x.id===id); if(p) return p; } return null; }
 
-/* ═══ 상태 ═══ */
+/* ═══ 상태 ★ 수정: uid는 Firebase 로그인에서만 나옴 ═══ */
 const state = { board:'free', page:1, query:'', filter:'all', sort:'new', user:null, uid:null, isAdmin:false, banned:false, cache:{} };
 const viewed = new Set();
 let marks = [];
@@ -637,14 +641,10 @@ let confirmResolve = null;
 let routeReady = false;
 let fbInitPromise = null;
 
-function localUid(){
-  let id = localStorage.getItem('pp_uid');
-  if(!id){ id = 'local-' + Math.random().toString(36).slice(2,10); localStorage.setItem('pp_uid', id); }
-  return id;
-}
 function saveMarks(){ localStorage.setItem('pp_marks', JSON.stringify(marks)); }
 function canWrite(){
   if(state.banned){ toast('차단된 계정이라 작성할 수 없어요','warn'); return false; }
+  if(!state.user){ openModal('#loginModal'); toast('로그인 후 이용할 수 있어요','warn'); return false; }
   return true;
 }
 
@@ -679,24 +679,32 @@ async function ensureFB(){
     if(fb && auth) return true;
     throw new Error('초기화 안 됨');
   }catch(e){
-    console.warn('[POSIPAN] Firebase 연결 실패:', e);
+    logErr('ensureFB', e);
     toast('Firebase 연결 실패 — F12 콘솔을 확인하세요', 'warn');
     return false;
   }
 }
+
+/* ★ 관리자/차단 확인 — 완료 시 항상 화면 갱신 (버그2 수정) */
 async function checkAuthExtras(){
+  const wasAdmin = state.isAdmin;
   state.isAdmin = false;
   state.banned = false;
   if(!fb || !auth || !auth.currentUser) return;
   try{
     state.isAdmin = (await fb.getDoc(fb.doc(fb.db,'admins', auth.currentUser.uid))).exists();
-  }catch(e){}
+  }catch(e){ logErr('checkAdmin', e); }
   try{
     state.banned = (await fb.getDoc(fb.doc(fb.db,'banned', auth.currentUser.uid))).exists();
     if(state.banned) toast('이 계정은 차단되어 있어요','warn');
-  }catch(e){}
-  if(state.isAdmin && !$('#postView').hidden && window._currentPost){
-    renderPost(state.board, window._currentPost.id);
+  }catch(e){ logErr('checkBanned', e); }
+  /* 관리자 상태가 방금 바뀌었거나, 상세 페이지가 열려있으면 무조건 재렌더링 */
+  if(routeReady){
+    if(!$('#postView').hidden && window._currentPost){
+      renderPost(state.board, window._currentPost.id);
+    } else if(!$('#boardView').hidden){
+      renderList();
+    }
   }
 }
 function onAuthChanged(user){
@@ -758,7 +766,7 @@ function subscribeBoard(board){
       state.cache[board] = pub.concat(mySecret);
       renderList();
     }, err => {
-      console.warn('쿼리 에러:', err);
+      logErr('listQuery', err);
       settled = true;
       if(!Array.isArray(state.cache[board])) state.cache[board] = [];
       renderList();
@@ -771,19 +779,20 @@ function subscribeBoard(board){
       }
     }));
 
-    if(auth && auth.currentUser){
+    /* ★ 수정: 로그인(uid 존재)한 경우에만 내 비밀글 쿼리 */
+    if(state.uid){
       const q2 = fb.query(base,
-        fb.where('board','==',board), fb.where('authorUid','==',auth.currentUser.uid),
+        fb.where('board','==',board), fb.where('authorUid','==',state.uid),
         fb.where('secret','==',true), fb.orderBy('createdAt','desc'));
       unsubs.push(fb.onSnapshot(q2, snap => {
         const prev = state.cache[board];
         const pub = (Array.isArray(prev) ? prev : []).filter(p => !p.secret);
         state.cache[board] = pub.concat(snap.docs.map(mapDoc));
         renderList();
-      }, err => { console.warn('mySecret 쿼리 에러:', err); }));
+      }, err => { logErr('mySecretQuery', err); }));
     }
   }catch(e){
-    console.warn('subscribeBoard 에러:', e);
+    logErr('subscribeBoard', e);
     settled = true;
     if(!Array.isArray(state.cache[board])) state.cache[board] = [];
     renderList();
@@ -796,7 +805,7 @@ async function getPost(id){
   try{
     const s = await fb.getDoc(fb.doc(fb.db,'posts',id));
     return s.exists() ? mapDoc(s) : null;
-  }catch(e){ return null; }
+  }catch(e){ logErr('getPost', e); return null; }
 }
 async function getComments(postId){
   if(!fb){
@@ -820,13 +829,13 @@ async function updatePost(id, patch){
   if(fb) await fb.updateDoc(fb.doc(fb.db,'posts',id), patch);
   else Object.assign(findLocal(id), patch);
 }
-/* ★ 삭제 버그 수정: 댓글 삭제는 최선형(일부 실패해도 글 삭제 진행) */
+/* ★ 삭제 버그 수정: 댓글 정리 실패해도 글 삭제 진행 */
 async function deletePost(p){
   if(fb){
     try{
       const cs = await fb.getDocs(fb.collection(fb.db,'posts',p.id,'comments'));
-      await Promise.all(cs.docs.map(d => fb.deleteDoc(d.ref).catch(()=>{})));
-    }catch(e){ console.warn('댓글 정리 스킵:', e); }
+      await Promise.allSettled(cs.docs.map(d => fb.deleteDoc(d.ref)));
+    }catch(e){ logErr('delComments', e); }
     await fb.deleteDoc(fb.doc(fb.db,'posts',p.id));
   } else {
     const arr = LOCAL[p.board]; const i = arr.findIndex(x=>x.id===p.id);
@@ -857,14 +866,14 @@ async function toggleLike(p){
   const liked = (p.likedBy||[]).includes(state.uid);
   p.likedBy = liked ? p.likedBy.filter(u=>u!==state.uid) : (p.likedBy||[]).concat([state.uid]);
   if(fb) fb.updateDoc(fb.doc(fb.db,'posts',p.id),
-    { likedBy: liked ? fb.arrayRemove(state.uid) : fb.arrayUnion(state.uid) }).catch(()=>{});
+    { likedBy: liked ? fb.arrayRemove(state.uid) : fb.arrayUnion(state.uid) }).catch(function(e){ logErr('like', e); });
   renderList();
 }
 async function bumpViews(p){
   if(viewed.has(p.id)) return;
   viewed.add(p.id);
   p.views = (p.views||0) + 1;
-  if(fb) fb.updateDoc(fb.doc(fb.db,'posts',p.id), { views: fb.increment(1) }).catch(()=>{});
+  if(fb) fb.updateDoc(fb.doc(fb.db,'posts',p.id), { views: fb.increment(1) }).catch(function(e){ logErr('views', e); });
 }
 
 /* ═══ 토스트 / 모달 ═══ */
@@ -927,7 +936,7 @@ function rowHTML(p, num){
   const cN = p.commentCount || (p.comments ? p.comments.length : 0) || 0;
   const cc = cN ? '<span class="c-cnt">[' + cN + ']</span>' : '';
   const isNew = toMs(p.createdAt) > Date.now() - 3600e3 ? '<span class="new-flag">N</span>' : '';
-  const liked = (p.likedBy||[]).includes(state.uid);
+  const liked = !!state.uid && (p.likedBy||[]).includes(state.uid);
   return '<article class="row" data-id="' + p.id + '">'
     + '<div class="num">' + (p.pinned ? '공지' : num) + '</div>'
     + '<div class="cell-main"><div class="t-line">' + pre + title + lock + cc + isNew + '</div></div>'
@@ -985,7 +994,7 @@ function renderBoard(){
   renderList();
 }
 
-/* ═══ 상세 ═══ */
+/* ═══ 상세 ★ 버그2 수정: 관리자 차단 버튼 조건 명확화 ═══ */
 const bodyHTML = body => esc(body||'').split(/\n{2,}/).map(t=>'<p>' + t.replace(/\n/g,'<br>') + '</p>').join('');
 async function renderPost(board, id){
   const p = await getPost(id);
@@ -997,19 +1006,20 @@ async function renderPost(board, id){
   const comments = await getComments(id);
   const b = BOARDS[board];
   const likes = (p.likedBy||[]).length;
-  const liked = (p.likedBy||[]).includes(state.uid);
+  const liked = !!state.uid && (p.likedBy||[]).includes(state.uid);
   const marked = marks.includes(p.id);
-  /* ★ 버그 수정: 로그인 상태일 때만 본인 글 판정 */
-  const mine = !!state.user && p.authorUid === state.uid;
-  const canManage = mine || (state.isAdmin && !!state.user);
+  const mine = !!state.user && !!state.uid && p.authorUid === state.uid;
+  const adminActive = state.isAdmin && !!state.user;   /* 관리자는 반드시 로그인 상태 */
+  const canManage = mine || adminActive;
 
+  /* 관리자 버튼: 고정 / 답변 / 차단(본인 글 제외 + 작성자 UID 존재) */
   let adminBtns = '';
-  if(state.isAdmin && state.user){
+  if(adminActive){
     adminBtns = '<button class="pa-btn" id="pinBtn">' + ic('pin',14) + (p.pinned ? '고정 해제' : '고정') + '</button>';
     if(board==='qna'){
       adminBtns += '<button class="pa-btn" id="answerBtn">' + ic('send',14) + (p.answer ? '답변 수정' : '답변 달기') + '</button>';
     }
-    if(!mine && p.authorUid){
+    if(p.authorUid && p.authorUid !== state.uid){
       adminBtns += '<button class="pa-btn danger" id="banBtn">' + ic('userx',14) + '작성자 차단</button>';
     }
   }
@@ -1038,8 +1048,7 @@ async function renderPost(board, id){
     + '</div></article>'
     + '<section class="comments"><div class="comment-head">댓글<span>' + comments.length + '</span></div>'
     + (comments.length ? comments.map(c=>{
-        /* 댓글 삭제: 본인 댓글, 관리자, 글쓴이(내 글의 댓글) 가능 */
-        const canDelC = state.isAdmin || (!!state.user && (c.authorUid === state.uid || p.authorUid === state.uid));
+        const canDelC = adminActive || (!!state.user && !!state.uid && (c.authorUid === state.uid || p.authorUid === state.uid));
         return '<div class="comment"><span class="avatar sm" style="background:' + avColor(c.author) + '">' + avInitial(c.author) + '</span>'
         + '<div class="c-main"><div class="c-head"><b>' + esc(c.author) + '</b>'
         + (c.authorUid === p.authorUid ? '<span class="op-badge">글쓴이</span>' : '')
@@ -1085,7 +1094,7 @@ function route(){
     if(id){ renderPost(b, id); }
     else { state.page = 1; state.filter = 'all'; renderBoard(); }
     routeReady = true;
-  }catch(e){ console.error(e); toast('페이지를 표시하는 중 문제가 발생했어요','warn'); }
+  }catch(e){ console.error('[POSIPAN:route]', e); toast('페이지를 표시하는 중 문제가 발생했어요','warn'); }
 }
 window.addEventListener('hashchange', route);
 
@@ -1158,7 +1167,7 @@ let debounce;
     if(await confirmAsk('글을 삭제할까요? 삭제한 글은 복구할 수 없어요.')){
       try{ await deletePost(p); }
       catch(err){
-        console.warn('삭제 실패:', err);
+        logErr('delPost', err);
         toast(permMsg(err, '삭제에 실패했어요'), 'warn');
         return;
       }
@@ -1177,7 +1186,7 @@ let debounce;
       p.pinned = newPin;
       renderPost(state.board, p.id);
       toast(newPin ? '글을 고정했어요' : '고정을 해제했어요');
-    }catch(err){ toast(permMsg(err, '고정 처리에 실패했어요'),'warn'); }
+    }catch(err){ logErr('pin', err); toast(permMsg(err, '고정 처리에 실패했어요'),'warn'); }
     return;
   }
   if(e.target.closest('#answerBtn')){
@@ -1188,11 +1197,12 @@ let debounce;
   }
   if(e.target.closest('#banBtn')){
     const p = window._currentPost;
+    if(!fb){ toast('Firebase 연결이 필요해요','warn'); return; }
     if(await confirmAsk(p.author + '님을 차단할까요? 이 계정은 더 이상 글·댓글을 작성할 수 없어요.')){
       try{
         await fb.setDoc(fb.doc(fb.db,'banned', p.authorUid), { nick: p.author, at: fb.serverTimestamp() });
         toast(p.author + '님을 차단했어요');
-      }catch(err){ toast(permMsg(err, '차단에 실패했어요'),'warn'); }
+      }catch(err){ logErr('ban', err); toast(permMsg(err, '차단에 실패했어요'),'warn'); }
     }
     return;
   }
@@ -1204,7 +1214,7 @@ let debounce;
       renderPost(state.board, window._currentPost.id);
       toast('댓글을 삭제했어요');
     }catch(err){
-      console.warn('댓글 삭제 실패:', err);
+      logErr('delComment', err);
       toast(permMsg(err, '댓글 삭제에 실패했어요'), 'warn');
     }
     return;
@@ -1217,13 +1227,13 @@ let debounce;
 async function submitComment(){
   const ta = $('#commentInput');
   if(!ta) return;
-  if(!state.user){ openModal('#loginModal'); toast('댓글 작성은 로그인 후 가능해요','warn'); return; }
   if(!canWrite()) return;
   const text = ta.value.trim();
   if(!text){ toast('댓글 내용을 입력해주세요','warn'); return; }
   try{
     await addComment(window._currentPost.id, { author:state.user, authorUid:state.uid, body:text });
   }catch(err){
+    logErr('addComment', err);
     toast(permMsg(err, '댓글 등록에 실패했어요'), 'warn');
     return;
   }
@@ -1243,7 +1253,7 @@ function resetWriteForm(){
   $('#writeModalTitle').textContent = '새 글 쓰기';
 }
 function openWrite(){
-  if(!state.user){ openModal('#loginModal'); toast('로그인 후 글쓰기가 가능해요','warn'); return; }
+  if(!canWrite()) return;
   resetWriteForm();
   $('#wBoardLabel').value = BOARDS[state.board].name;
   toggleWriteFields();
@@ -1266,7 +1276,6 @@ function openEdit(p){
 }
  $('#writeBtn').addEventListener('click', openWrite);
  $('#wSubmit').addEventListener('click', async ()=>{
-  if(!state.user){ openModal('#loginModal'); toast('로그인 후 이용할 수 있어요','warn'); return; }
   if(!canWrite()) return;
   const board = state.board;
   const title = $('#wTitle').value.trim();
@@ -1278,7 +1287,7 @@ function openEdit(p){
     const patch = { title, body, category: cat };
     if(board==='qna') patch.secret = $('#wSecret').checked;
     try{ await updatePost(editingId, patch); }
-    catch(err){ toast(permMsg(err, '수정에 실패했어요'),'warn'); return; }
+    catch(err){ logErr('editPost', err); toast(permMsg(err, '수정에 실패했어요'),'warn'); return; }
     closeModal($('#wSubmit'));
     resetWriteForm();
     toast('글이 수정됐어요');
@@ -1290,6 +1299,7 @@ function openEdit(p){
   let newId;
   try{ newId = await createPost(data); }
   catch(err){
+    logErr('createPost', err);
     toast(permMsg(err, '글 등록에 실패했어요'), 'warn');
     return;
   }
@@ -1310,20 +1320,23 @@ function openEdit(p){
     $('#answerInput').value = '';
     toast('답변이 등록됐어요');
     renderPost(state.board, p.id);
-  }catch(err){ toast(permMsg(err, '답변 등록에 실패했어요'),'warn'); }
+  }catch(err){ logErr('answer', err); toast(permMsg(err, '답변 등록에 실패했어요'),'warn'); }
 });
 
 /* ═══ 운영 관리 (관리자) ═══ */
 function openAdmin(){
+  if(!fb){ toast('Firebase 연결이 필요해요','warn'); return; }
   $('#bannedList').innerHTML = '<div class="loading"><div class="spin"></div></div>';
   openModal('#adminModal');
   try{
     adminUnsub = fb.onSnapshot(fb.collection(fb.db,'banned'), function(snap){
       renderBanned(snap.docs);
     }, function(err){
+      logErr('bannedList', err);
       $('#bannedList').innerHTML = '<p class="admin-empty">목록을 불러오지 못했어요</p>';
     });
   }catch(e){
+    logErr('openAdmin', e);
     $('#bannedList').innerHTML = '<p class="admin-empty">목록을 불러오지 못했어요</p>';
   }
 }
@@ -1346,7 +1359,7 @@ function renderBanned(docs){
   try{
     await fb.deleteDoc(fb.doc(fb.db,'banned', btn.dataset.unban));
     toast('차단을 해제했어요');
-  }catch(err){ toast('해제에 실패했어요','warn'); }
+  }catch(err){ logErr('unban', err); toast('해제에 실패했어요','warn'); }
 });
 
 /* ═══ 로그인 ═══ */
@@ -1380,7 +1393,7 @@ async function googleLogin(){
     finishLogin(nick);
   }catch(e){
     const code = (e && e.code) || '';
-    console.warn('[POSIPAN] Google 로그인 실패. 오류 코드:', code, e);
+    logErr('googleLogin', e);
     if(code==='auth/popup-closed-by-user' || code==='auth/cancelled-popup-request') return;
     if(code==='auth/popup-blocked') toast('팝업이 차단되었어요. 차단 해제 후 다시 시도해주세요','warn');
     else if(code==='auth/unauthorized-domain') toast('도메인 미등록 — 승인된 도메인에 Vercel 주소를 https:// 없이 입력했는지 확인하세요','warn');
@@ -1395,11 +1408,10 @@ async function guestLogin(){
   const ready = await ensureFB();
   if(!ready) return;
   try{
-    /* 이미 익명 세션이 있으면 같은 UID 재사용 (재로그인 시 글 관리 권한 유지) */
     await withTimeout(fb.au.signInAnonymously(auth), 8000, '게스트 로그인');
     state.uid = auth.currentUser ? auth.currentUser.uid : state.uid;
   }catch(e){
-    console.warn('[POSIPAN] 익명 로그인 실패. 오류 코드:', (e && e.code) || '', e);
+    logErr('guestLogin', e);
     toast('게스트 로그인 실패 — Firebase에서 익명 로그인을 켰는지 확인하세요','warn');
     return;
   }
@@ -1419,7 +1431,6 @@ function renderUser(){
   }
 }
 
-/* ★ 로그아웃 — 게스트는 익명 UID 유지(같은 기기에서 내 글 관리 가능), Google 계정만 완전 로그아웃 */
 function doLogout(){
   state.user = null;
   state.isAdmin = false;
@@ -1427,14 +1438,11 @@ function doLogout(){
   localStorage.removeItem('pp_nick');
   renderUser();
   if(auth && fb && auth.currentUser){
-    if(auth.currentUser.isAnonymous){
-      state.uid = auth.currentUser.uid; /* 익명 세션 유지 */
-    } else {
-      state.uid = null;
-      fb.au.signOut(auth).catch(function(){});
-    }
+    /* ★ 수정: 게스트든 구글이든 완전 로그아웃 (uid는 Firebase 이벤트가 정리) */
+    state.uid = null;
+    fb.au.signOut(auth).catch(function(e){ logErr('signOut', e); });
   } else {
-    state.uid = localUid();
+    state.uid = null;
   }
   for(const k in state.cache){
     if(Array.isArray(state.cache[k])) state.cache[k] = state.cache[k].filter(function(p){ return !p.secret; });
@@ -1495,10 +1503,11 @@ function initIcons(){
     await withTimeout(initFB(), 10000, 'Firebase 초기화');
     console.log('[POSIPAN] Firebase 연결 완료 ✓ (posipanweb)');
   }catch(e){
-    console.warn('[POSIPAN] Firebase 초기화 실패:', e);
+    logErr('boot', e);
     fb = null; auth = null;
     toast('Firebase 연결 실패 — F12 콘솔을 확인하세요', 'warn');
   }
+  /* ★ 수정: uid는 오직 auth.currentUser에서만. 비로그인 = uid null */
   if(auth && auth.currentUser){
     state.uid = auth.currentUser.uid;
     if(!state.user){
@@ -1506,9 +1515,9 @@ function initIcons(){
       if(saved) state.user = saved;
     }
     checkAuthExtras();
+  } else {
+    state.uid = null;
   }
-  if(!state.uid && !fb) state.uid = localUid();
-  state.user = state.user || localStorage.getItem('pp_nick') || null;
   renderUser();
   route();
 })();
