@@ -209,7 +209,7 @@ svg{flex-shrink:0}
   border-radius:18px;box-shadow:0 16px 48px rgba(16,24,40,.2);
   transform:translateY(14px) scale(.98);transition:transform .22s cubic-bezier(.2,.7,.3,1.2)}
 .overlay.open .modal{transform:none}
-.modal.small{max-width:400px}
+.modal.small{max-width:420px}
 .modal-head{display:flex;align-items:center;justify-content:space-between;padding:20px 26px 15px;
   border-bottom:1px solid var(--line-soft)}
 .modal-head h3{font-size:17px;font-weight:800}
@@ -239,10 +239,19 @@ svg{flex-shrink:0}
   max-width:200px;overflow:hidden;text-overflow:ellipsis}
 .adm-row .btn{height:32px;padding:0 12px;font-size:12px}
 .admin-empty{font-size:13px;color:var(--muted);padding:14px 0}
+.diag-row{display:flex;gap:11px;align-items:flex-start;padding:11px 0;border-bottom:1px solid var(--line-soft)}
+.diag-row:last-child{border-bottom:none}
+.diag-row b{display:block;font-size:13.5px;font-weight:700}
+.d-detail{display:block;font-size:11.5px;color:var(--muted);word-break:break-all;line-height:1.5;margin-top:2px}
+.diag-ic{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;font-size:12px;font-weight:800;
+  flex-shrink:0;margin-top:1px}
+.diag-ic.ok{background:rgba(22,163,74,.12);color:var(--green)}
+.diag-ic.fail{background:var(--red-soft);color:var(--red)}
+.diag-ic.wait{background:var(--surface-3);color:var(--muted)}
 .toasts{position:fixed;right:22px;bottom:22px;z-index:110;display:flex;flex-direction:column;gap:9px}
 .toast{display:flex;align-items:center;gap:11px;background:#1C2027;border-radius:12px;padding:13px 18px;
   font-size:13.5px;font-weight:600;color:#fff;box-shadow:0 14px 40px rgba(16,24,40,.3);
-  animation:toastIn .3s ease;max-width:340px}
+  animation:toastIn .3s ease;max-width:360px}
 .toast svg{color:#7CE38B}
 .toast.warn svg{color:#FFC24B}
 .toast.out{animation:toastOut .25s ease forwards}
@@ -514,6 +523,19 @@ svg{flex-shrink:0}
   </div>
 </div>
 
+<!-- 연결 진단 모달 -->
+<div class="overlay" id="diagModal">
+  <div class="modal small">
+    <div class="modal-head"><h3>연결 진단</h3><button class="modal-x" data-close><span data-ic="x" data-ics="16"></span></button></div>
+    <div class="modal-body">
+      <div id="diagList"><div class="loading"><div class="spin"></div>진단 중…</div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close>닫기</button>
+    </div>
+  </div>
+</div>
+
 <div class="toasts" id="toasts"></div>
 
 <script>
@@ -564,13 +586,46 @@ function relTime(v){
   const t = toDate(v), p = n => String(n).padStart(2,'0');
   return p(t.getMonth()+1) + '.' + p(t.getDate());
 }
-function permMsg(err, fallback){
-  return (err && err.code === 'permission-denied')
-    ? '권한이 없어요 — 로그인 상태와 본인 글 여부를 확인해주세요' : fallback;
-}
-/* ★ 디버깅: 모든 Firestore 에러를 콘솔에 상세 기록 */
 function logErr(where, err){
   console.warn('[POSIPAN:' + where + ']', (err && err.code) || '', err && err.message || err);
+}
+/* 에러 → 안내 문구 (코드 포함해서 정확히 알려줌) */
+function errMsg(err, fallback){
+  const code = (err && err.code) || 'unknown';
+  if(code === 'permission-denied'){
+    return '권한 거부[' + code + '] — ① 보안 규칙(Rules)을 최신 버전으로 게시했나요? ② admins 문서 ID가 내 UID와 같나요? (프로필 → 연결 진단 확인)';
+  }
+  if(code === 'failed-precondition'){
+    return '인덱스 필요 — F12 콘솔의 생성 링크를 클릭해주세요';
+  }
+  if(code === 'unavailable' || code === 'network-request-failed'){
+    return '네트워크 오류 — 잠시 후 다시 시도해주세요';
+  }
+  return fallback + ' [' + code + ']';
+}
+
+/* ═══ 욕설 필터 ═══ */
+/* 차단할 단어 목록 — 여기서 자유롭게 추가/제거 가능 */
+const BAD_WORDS = [
+  '시발','씨발','ㅅㅂ','ㅆㅂ','씌발','슈발','ㅅㅃ','sibal',
+  '개새끼','개새키','개색끼','개세끼','개색키','개같은','개소리','개저씨',
+  '병신','ㅂㅅ','ㅄ','등신','돌아이','찐따','틀딱',
+  '좆','죶','ㅈㅈ','좆까','좆밥',
+  '씹덕','씹창',
+  '미친놈','미친년','미친새끼','미친새',
+  '개자식','개년','개놈','쌍놈','쌍년',
+  '입닥쳐','닥치셈','꺼져라','뒤져라','뒈져라','죽어라',
+  'fuck','shit','bitch','bastard','asshole','cunt','pussy','fuckyou','fck'
+];
+/* 공백/특수문자 제거 + 소문자화해서 우회 시도까지 감지 */
+function filterText(text){
+  const norm = String(text || '').toLowerCase().replace(/[^0-9a-z가-힣ㄱ-ㅎㅏ-ㅣ]/g, '');
+  if(!norm) return null;
+  for(const w of BAD_WORDS){
+    const wn = w.toLowerCase().replace(/[^0-9a-z가-힣ㄱ-ㅎㅏ-ㅣ]/g, '');
+    if(wn && norm.includes(wn)) return w;
+  }
+  return null;
 }
 
 /* ═══ 인라인 SVG 아이콘 ═══ */
@@ -581,6 +636,7 @@ const I = {
   user:'<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
   userx:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><line x1="17" x2="22" y1="8" y2="13"/><line x1="22" x2="17" y1="8" y2="13"/>',
   shield:'<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1 1 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  activity:'<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   pin:'<line x1="12" x2="12" y1="17" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>',
   chevL:'<path d="m15 18-6-6 6-6"/>',
   chevR:'<path d="m9 18 6-6-6-6"/>',
@@ -626,7 +682,7 @@ function matchFilter(p){
 const LOCAL = { free:[], raid:[], trade:[], info:[], qna:[] };
 function findLocal(id){ for(const k in LOCAL){ const p = LOCAL[k].find(x=>x.id===id); if(p) return p; } return null; }
 
-/* ═══ 상태 ★ 수정: uid는 Firebase 로그인에서만 나옴 ═══ */
+/* ═══ 상태 ═══ */
 const state = { board:'free', page:1, query:'', filter:'all', sort:'new', user:null, uid:null, isAdmin:false, banned:false, cache:{} };
 const viewed = new Set();
 let marks = [];
@@ -640,11 +696,12 @@ let adminUnsub = null;
 let confirmResolve = null;
 let routeReady = false;
 let fbInitPromise = null;
+let rulesWarned = false;
 
 function saveMarks(){ localStorage.setItem('pp_marks', JSON.stringify(marks)); }
 function canWrite(){
-  if(state.banned){ toast('차단된 계정이라 작성할 수 없어요','warn'); return false; }
   if(!state.user){ openModal('#loginModal'); toast('로그인 후 이용할 수 있어요','warn'); return false; }
+  if(state.banned){ toast('차단된 계정이라 작성할 수 없어요','warn'); return false; }
   return true;
 }
 
@@ -685,26 +742,31 @@ async function ensureFB(){
   }
 }
 
-/* ★ 관리자/차단 확인 — 완료 시 항상 화면 갱신 (버그2 수정) */
+/* 관리자/차단 확인 — 규칙이 옛날이면 바로 안내 */
 async function checkAuthExtras(){
-  const wasAdmin = state.isAdmin;
   state.isAdmin = false;
   state.banned = false;
   if(!fb || !auth || !auth.currentUser) return;
   try{
-    state.isAdmin = (await fb.getDoc(fb.doc(fb.db,'admins', auth.currentUser.uid))).exists();
-  }catch(e){ logErr('checkAdmin', e); }
+    const snap = await fb.getDoc(fb.doc(fb.db,'admins', auth.currentUser.uid));
+    state.isAdmin = snap.exists();
+    if(!snap.exists()) console.warn('[POSIPAN] 관리자 아님: admins/' + auth.currentUser.uid + ' 문서 없음');
+  }catch(e){
+    logErr('checkAdmin', e);
+    state.isAdmin = false;
+    if(e.code === 'permission-denied' && !rulesWarned){
+      rulesWarned = true;
+      toast('관리자 확인 실패 — 보안 규칙(Rules)이 최신이 아니에요! Firestore → Rules 재게시 필요', 'warn');
+    }
+  }
   try{
-    state.banned = (await fb.getDoc(fb.doc(fb.db,'banned', auth.currentUser.uid))).exists();
+    const snap = await fb.getDoc(fb.doc(fb.db,'banned', auth.currentUser.uid));
+    state.banned = snap.exists();
     if(state.banned) toast('이 계정은 차단되어 있어요','warn');
   }catch(e){ logErr('checkBanned', e); }
-  /* 관리자 상태가 방금 바뀌었거나, 상세 페이지가 열려있으면 무조건 재렌더링 */
   if(routeReady){
-    if(!$('#postView').hidden && window._currentPost){
-      renderPost(state.board, window._currentPost.id);
-    } else if(!$('#boardView').hidden){
-      renderList();
-    }
+    if(!$('#postView').hidden && window._currentPost) renderPost(state.board, window._currentPost.id);
+    else if(!$('#boardView').hidden) renderList();
   }
 }
 function onAuthChanged(user){
@@ -770,16 +832,9 @@ function subscribeBoard(board){
       settled = true;
       if(!Array.isArray(state.cache[board])) state.cache[board] = [];
       renderList();
-      if(err.code === 'failed-precondition'){
-        toast('복합 인덱스가 필요해요. 브라우저 콘솔(F12)의 생성 링크를 클릭해주세요', 'warn');
-      }else if(err.code === 'permission-denied'){
-        toast('권한이 없어요. 보안 규칙을 확인해주세요', 'warn');
-      }else{
-        toast('목록을 불러오지 못했어요', 'warn');
-      }
+      toast(errMsg(err, '목록을 불러오지 못했어요'), 'warn');
     }));
 
-    /* ★ 수정: 로그인(uid 존재)한 경우에만 내 비밀글 쿼리 */
     if(state.uid){
       const q2 = fb.query(base,
         fb.where('board','==',board), fb.where('authorUid','==',state.uid),
@@ -829,7 +884,6 @@ async function updatePost(id, patch){
   if(fb) await fb.updateDoc(fb.doc(fb.db,'posts',id), patch);
   else Object.assign(findLocal(id), patch);
 }
-/* ★ 삭제 버그 수정: 댓글 정리 실패해도 글 삭제 진행 */
 async function deletePost(p){
   if(fb){
     try{
@@ -884,7 +938,7 @@ function toast(msg, type){
   el.className = 'toast' + (type==='warn' ? ' warn' : '');
   el.innerHTML = ic(type==='warn' ? 'warn' : 'check', 17) + '<span>' + esc(msg) + '</span>';
   box.appendChild(el);
-  setTimeout(()=>{ el.classList.add('out'); setTimeout(()=>el.remove(), 240); }, 2800);
+  setTimeout(()=>{ el.classList.add('out'); setTimeout(()=>el.remove(), 240); }, 4200);
 }
 function openModal(id){ $(id).classList.add('open'); }
 function hideOverlay(o){
@@ -910,6 +964,88 @@ function confirmAsk(msg){
 }
  $('#confirmOk').addEventListener('click', ()=>{ hideOverlay($('#confirmModal')); if(confirmResolve){confirmResolve(true); confirmResolve=null;} });
  $('#confirmNo').addEventListener('click', ()=>{ hideOverlay($('#confirmModal')); if(confirmResolve){confirmResolve(false); confirmResolve=null;} });
+
+/* ═══ 연결 진단 ★ 신규 ═══ */
+async function runDiagnostics(){
+  $('#diagList').innerHTML = '<div class="loading"><div class="spin"></div>진단 중…</div>';
+  openModal('#diagModal');
+  const rows = [];
+  const add = (status, label, detail) => rows.push({status, label, detail});
+
+  /* 1. Firebase SDK */
+  if(fb && auth){
+    add('ok', 'Firebase 연결', '정상 (posipanweb)');
+  } else {
+    add('fail', 'Firebase 연결', '실패 — 새로고침하거나 인터넷 확인');
+    renderDiag(rows); return;
+  }
+
+  /* 2. 보안 규칙 버전 감지 (admins 컬렉션 읽기 테스트) */
+  let rulesNew = false;
+  try{
+    await fb.getDocs(fb.query(fb.collection(fb.db,'admins'), fb.limit(1)));
+    rulesNew = true;
+    add('ok', '보안 규칙 버전', '최신 규칙 배포됨 ✓');
+  }catch(e){
+    add('fail', '보안 규칙 버전', '이전 버전 규칙 사용 중! Firestore → Rules에 최신 규칙을 붙여넣고 게시하세요 (' + ((e&&e.code)||'?') + ')');
+  }
+
+  /* 3. 로그인 상태 */
+  const u = auth.currentUser;
+  if(u){
+    add('ok', '로그인 상태', (u.isAnonymous ? '게스트' : 'Google 계정') + ' · UID: ' + u.uid);
+  } else {
+    add('fail', '로그인 상태', '로그인되어 있지 않아요');
+    renderDiag(rows); return;
+  }
+
+  /* 4. 관리자 등록 확인 */
+  try{
+    const snap = await fb.getDoc(fb.doc(fb.db,'admins', u.uid));
+    if(snap.exists()){
+      add('ok', '관리자 등록', 'admins/' + u.uid + ' 등록됨 ✓');
+    } else {
+      add('fail', '관리자 등록', 'admins 문서 없음! Firestore에서 컬렉션 admins → 문서 ID를 아래 UID로 생성:\n' + u.uid);
+    }
+  }catch(e){
+    add('fail', '관리자 등록', '읽기 거부 (' + ((e&&e.code)||'?') + ') — 규칙 재게시 후 다시 진단');
+  }
+
+  /* 5. 차단 상태 */
+  try{
+    const snap = await fb.getDoc(fb.doc(fb.db,'banned', u.uid));
+    add(snap.exists() ? 'fail' : 'ok', '차단 상태', snap.exists() ? '이 계정은 차단됨!' : '정상');
+  }catch(e){
+    add('fail', '차단 상태', '확인 실패 (' + ((e&&e.code)||'?') + ')');
+  }
+
+  /* 6. 게시글 읽기 */
+  try{
+    await fb.getDocs(fb.query(fb.collection(fb.db,'posts'), fb.limit(1)));
+    add('ok', '게시글 읽기', '정상');
+  }catch(e){
+    add('fail', '게시글 읽기', ((e&&e.code)||'?') + ' — 규칙/인덱스 확인');
+  }
+
+  /* 7. 최종 판정 */
+  const failAdmin = rows.find(r => r.label === '관리자 등록' && r.status === 'fail');
+  if(!rulesNew){
+    add('fail', '★ 결론', '원인: 보안 규칙이 최신이 아님 → 아래 안내의 규칙을 Firestore → Rules에 붙여넣고 게시 → 1분 후 다시 진단');
+  } else if(failAdmin){
+    add('fail', '★ 결론', '원인: 관리자 미등록 → Firebase Console → Firestore → admins 컬렉션에 문서 ID=내 UID로 문서 생성');
+  } else {
+    add('ok', '★ 결론', '모두 정상! 삭제·차단·관리자 기능이 작동해야 해요. 안 되면 F12 콘솔의 [POSIPAN:...] 로그를 보내주세요');
+  }
+
+  renderDiag(rows);
+}
+function renderDiag(rows){
+  $('#diagList').innerHTML = rows.map(r=>
+    '<div class="diag-row">'
+    + '<span class="diag-ic ' + r.status + '">' + (r.status==='ok' ? '✓' : '✗') + '</span>'
+    + '<div><b>' + esc(r.label) + '</b><span class="d-detail">' + esc(r.detail).replace(/\n/g, '<br>') + '</span></div>'
+    + '</div>').join('');
+}
 
 /* ═══ 목록 ═══ */
 function getVisible(){
@@ -994,7 +1130,7 @@ function renderBoard(){
   renderList();
 }
 
-/* ═══ 상세 ★ 버그2 수정: 관리자 차단 버튼 조건 명확화 ═══ */
+/* ═══ 상세 ═══ */
 const bodyHTML = body => esc(body||'').split(/\n{2,}/).map(t=>'<p>' + t.replace(/\n/g,'<br>') + '</p>').join('');
 async function renderPost(board, id){
   const p = await getPost(id);
@@ -1009,10 +1145,9 @@ async function renderPost(board, id){
   const liked = !!state.uid && (p.likedBy||[]).includes(state.uid);
   const marked = marks.includes(p.id);
   const mine = !!state.user && !!state.uid && p.authorUid === state.uid;
-  const adminActive = state.isAdmin && !!state.user;   /* 관리자는 반드시 로그인 상태 */
+  const adminActive = state.isAdmin && !!state.user;
   const canManage = mine || adminActive;
 
-  /* 관리자 버튼: 고정 / 답변 / 차단(본인 글 제외 + 작성자 UID 존재) */
   let adminBtns = '';
   if(adminActive){
     adminBtns = '<button class="pa-btn" id="pinBtn">' + ic('pin',14) + (p.pinned ? '고정 해제' : '고정') + '</button>';
@@ -1168,7 +1303,7 @@ let debounce;
       try{ await deletePost(p); }
       catch(err){
         logErr('delPost', err);
-        toast(permMsg(err, '삭제에 실패했어요'), 'warn');
+        toast(errMsg(err, '삭제에 실패했어요'), 'warn');
         return;
       }
       toast('글을 삭제했어요');
@@ -1186,7 +1321,7 @@ let debounce;
       p.pinned = newPin;
       renderPost(state.board, p.id);
       toast(newPin ? '글을 고정했어요' : '고정을 해제했어요');
-    }catch(err){ logErr('pin', err); toast(permMsg(err, '고정 처리에 실패했어요'),'warn'); }
+    }catch(err){ logErr('pin', err); toast(errMsg(err, '고정 처리에 실패했어요'),'warn'); }
     return;
   }
   if(e.target.closest('#answerBtn')){
@@ -1202,7 +1337,7 @@ let debounce;
       try{
         await fb.setDoc(fb.doc(fb.db,'banned', p.authorUid), { nick: p.author, at: fb.serverTimestamp() });
         toast(p.author + '님을 차단했어요');
-      }catch(err){ logErr('ban', err); toast(permMsg(err, '차단에 실패했어요'),'warn'); }
+      }catch(err){ logErr('ban', err); toast(errMsg(err, '차단에 실패했어요'),'warn'); }
     }
     return;
   }
@@ -1215,7 +1350,7 @@ let debounce;
       toast('댓글을 삭제했어요');
     }catch(err){
       logErr('delComment', err);
-      toast(permMsg(err, '댓글 삭제에 실패했어요'), 'warn');
+      toast(errMsg(err, '댓글 삭제에 실패했어요'), 'warn');
     }
     return;
   }
@@ -1230,11 +1365,13 @@ async function submitComment(){
   if(!canWrite()) return;
   const text = ta.value.trim();
   if(!text){ toast('댓글 내용을 입력해주세요','warn'); return; }
+  /* 욕설 필터 */
+  if(filterText(text)){ toast('댓글에 사용할 수 없는 단어가 포함되어 있어요','warn'); return; }
   try{
     await addComment(window._currentPost.id, { author:state.user, authorUid:state.uid, body:text });
   }catch(err){
     logErr('addComment', err);
-    toast(permMsg(err, '댓글 등록에 실패했어요'), 'warn');
+    toast(errMsg(err, '댓글 등록에 실패했어요'), 'warn');
     return;
   }
   renderPost(state.board, window._currentPost.id);
@@ -1282,12 +1419,15 @@ function openEdit(p){
   const body = $('#wBody').value.trim();
   if(!title){ toast('제목을 입력해주세요','warn'); return; }
   if(!body){ toast('내용을 입력해주세요','warn'); return; }
+  /* 욕설 필터 */
+  if(filterText(title)){ toast('제목에 사용할 수 없는 단어가 포함되어 있어요','warn'); return; }
+  if(filterText(body)){ toast('내용에 사용할 수 없는 단어가 포함되어 있어요','warn'); return; }
   const cat = board==='qna' ? '문의' : $('#wCat').value;
   if(editingId){
     const patch = { title, body, category: cat };
     if(board==='qna') patch.secret = $('#wSecret').checked;
     try{ await updatePost(editingId, patch); }
-    catch(err){ logErr('editPost', err); toast(permMsg(err, '수정에 실패했어요'),'warn'); return; }
+    catch(err){ logErr('editPost', err); toast(errMsg(err, '수정에 실패했어요'),'warn'); return; }
     closeModal($('#wSubmit'));
     resetWriteForm();
     toast('글이 수정됐어요');
@@ -1300,7 +1440,7 @@ function openEdit(p){
   try{ newId = await createPost(data); }
   catch(err){
     logErr('createPost', err);
-    toast(permMsg(err, '글 등록에 실패했어요'), 'warn');
+    toast(errMsg(err, '글 등록에 실패했어요'), 'warn');
     return;
   }
   closeModal($('#wSubmit'));
@@ -1313,6 +1453,7 @@ function openEdit(p){
  $('#answerSubmit').addEventListener('click', async ()=>{
   const text = $('#answerInput').value.trim();
   if(!text){ toast('답변 내용을 입력해주세요','warn'); return; }
+  if(filterText(text)){ toast('답변에 사용할 수 없는 단어가 포함되어 있어요','warn'); return; }
   const p = window._currentPost;
   try{
     await updatePost(p.id, { answer: text, status: 'done' });
@@ -1320,7 +1461,7 @@ function openEdit(p){
     $('#answerInput').value = '';
     toast('답변이 등록됐어요');
     renderPost(state.board, p.id);
-  }catch(err){ logErr('answer', err); toast(permMsg(err, '답변 등록에 실패했어요'),'warn'); }
+  }catch(err){ logErr('answer', err); toast(errMsg(err, '답변 등록에 실패했어요'),'warn'); }
 });
 
 /* ═══ 운영 관리 (관리자) ═══ */
@@ -1333,7 +1474,7 @@ function openAdmin(){
       renderBanned(snap.docs);
     }, function(err){
       logErr('bannedList', err);
-      $('#bannedList').innerHTML = '<p class="admin-empty">목록을 불러오지 못했어요</p>';
+      $('#bannedList').innerHTML = '<p class="admin-empty">목록을 불러오지 못했어요 — ' + esc(errMsg(err,'')) + '</p>';
     });
   }catch(e){
     logErr('openAdmin', e);
@@ -1359,7 +1500,7 @@ function renderBanned(docs){
   try{
     await fb.deleteDoc(fb.doc(fb.db,'banned', btn.dataset.unban));
     toast('차단을 해제했어요');
-  }catch(err){ logErr('unban', err); toast('해제에 실패했어요','warn'); }
+  }catch(err){ logErr('unban', err); toast(errMsg(err, '해제에 실패했어요'),'warn'); }
 });
 
 /* ═══ 로그인 ═══ */
@@ -1390,6 +1531,8 @@ async function googleLogin(){
       nick = (res.user.displayName || '').trim().replace(/\s+/g,'').slice(0,12);
       if(nick.length < 2) nick = '트레이너' + Math.floor(Math.random()*900 + 100);
     }
+    /* 구글 이름에 비속어가 있으면 자동 대체 */
+    if(filterText(nick)) nick = '트레이너' + Math.floor(Math.random()*900 + 100);
     finishLogin(nick);
   }catch(e){
     const code = (e && e.code) || '';
@@ -1405,6 +1548,8 @@ async function googleLogin(){
 async function guestLogin(){
   const nick = $('#nickInput').value.trim();
   if(nick.length < 2){ toast('닉네임은 2자 이상 입력해주세요','warn'); return; }
+  /* 욕설 필터 — 닉네임 */
+  if(filterText(nick)){ toast('닉네임에 사용할 수 없는 단어가 포함되어 있어요','warn'); return; }
   const ready = await ensureFB();
   if(!ready) return;
   try{
@@ -1435,14 +1580,12 @@ function doLogout(){
   state.user = null;
   state.isAdmin = false;
   state.banned = false;
+  rulesWarned = false;
   localStorage.removeItem('pp_nick');
   renderUser();
-  if(auth && fb && auth.currentUser){
-    /* ★ 수정: 게스트든 구글이든 완전 로그아웃 (uid는 Firebase 이벤트가 정리) */
-    state.uid = null;
+  state.uid = null;
+  if(auth && fb){
     fb.au.signOut(auth).catch(function(e){ logErr('signOut', e); });
-  } else {
-    state.uid = null;
   }
   for(const k in state.cache){
     if(Array.isArray(state.cache[k])) state.cache[k] = state.cache[k].filter(function(p){ return !p.secret; });
@@ -1452,6 +1595,7 @@ function doLogout(){
   toast('로그아웃했어요','warn');
 }
 
+/* 프로필 드롭다운 — 진단 / UID 복사 / 운영 관리 / 로그아웃 */
  $('#userChip').addEventListener('click', function(e){
   e.stopPropagation();
   const ex = document.querySelector('.logout-dd');
@@ -1479,6 +1623,7 @@ function doLogout(){
       catch(err){ toast('UID: ' + state.uid); }
     });
   }
+  addItem('activity', '연결 진단', runDiagnostics);
   if(state.isAdmin && state.user){
     addItem('shield', '운영 관리', openAdmin);
   }
@@ -1507,7 +1652,6 @@ function initIcons(){
     fb = null; auth = null;
     toast('Firebase 연결 실패 — F12 콘솔을 확인하세요', 'warn');
   }
-  /* ★ 수정: uid는 오직 auth.currentUser에서만. 비로그인 = uid null */
   if(auth && auth.currentUser){
     state.uid = auth.currentUser.uid;
     if(!state.user){
