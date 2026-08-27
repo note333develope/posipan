@@ -481,24 +481,18 @@ svg{flex-shrink:0}
 (function(){
 'use strict';
 
-/* ╔══════════════════════════════════════════════════════════╗
-   ║ ★★★ 이 파일로 교체한 뒤 필수 작업 ★★★                        ║
-   ║ 아래 firebaseConfig의 YOUR_XXX 6개 값을                    ║
-   ║ Firebase Console → 프로젝트 설정 → 내 앱 → Config에서        ║
-   ║ 복사해 붙여넣으세요! (안 넣으면 Google 로그인 작동 안 함)      ║
-   ╚══════════════════════════════════════════════════════════╝ */
-
+/* ═══ 개인정보 문의 이메일 ═══ */
 const CONTACT_EMAIL = "note333develope@gmail.com";
 
+/* ═══ 님의 Firebase 설정 (posipanweb 프로젝트) ═══ */
 const firebaseConfig = {
-  apiKey:            "YOUR_API_KEY",
-  authDomain:        "YOUR_PROJECT.firebaseapp.com",
-  projectId:         "YOUR_PROJECT_ID",
-  storageBucket:     "YOUR_PROJECT.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId:             "YOUR_APP_ID"
+  apiKey: "AIzaSyCP3OtW-O_HFCqSx57IcayRD5r6G6ZgH1c",
+  authDomain: "posipanweb.firebaseapp.com",
+  projectId: "posipanweb",
+  storageBucket: "posipanweb.firebasestorage.app",
+  messagingSenderId: "293413901382",
+  appId: "1:293413901382:web:6e0b30239abc13df376647"
 };
-const TRY_FB = !/^YOUR_/.test(firebaseConfig.apiKey);
 
 /* ═══ 유틸 ═══ */
 const $  = s => document.querySelector(s);
@@ -603,7 +597,7 @@ function localUid(){
 }
 function saveMarks(){ localStorage.setItem('pp_marks', JSON.stringify(marks)); }
 
-/* ═══ Firebase — 중복 초기화 방지 + 실패 시 재시도 가능 ═══ */
+/* ═══ Firebase ═══ */
 function withTimeout(promise, ms, label){
   return Promise.race([
     promise,
@@ -611,15 +605,15 @@ function withTimeout(promise, ms, label){
   ]);
 }
 async function initFB(){
-  if(fb && auth) return;                  /* 이미 연결됨 */
-  if(fbInitPromise) return fbInitPromise; /* 진행 중이면 기다리기 */
+  if(fb && auth) return;
+  if(fbInitPromise) return fbInitPromise;
   fbInitPromise = (async () => {
-    const [{ initializeApp, getApps }, fs, au] = await Promise.all([
+    const [{ initializeApp }, fs, au] = await Promise.all([
       import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js'),
       import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js'),
       import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js'),
     ]);
-    const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
+    const app = initializeApp(firebaseConfig);
     fb = { db: fs.getFirestore(app), au, ...fs };
     auth = au.getAuth(app);
     au.onAuthStateChanged(auth, onAuthChanged);
@@ -627,25 +621,20 @@ async function initFB(){
   try{
     await fbInitPromise;
   }catch(e){
-    fbInitPromise = null; /* 실패했으니 다음에 재시도 가능하게 */
+    fbInitPromise = null;
     throw e;
   }
 }
 
-/* ★ 핵심 수정: 로그인 직전에 Firebase 준비 확인 — 없으면 그 자리에서 연결 시도 */
 async function ensureFB(){
   if(fb && auth) return true;
-  if(!TRY_FB){
-    toast('Firebase 설정이 필요해요 — firebaseConfig에 값을 넣고 다시 배포하세요', 'warn');
-    return false;
-  }
   try{
     await withTimeout(initFB(), 10000, 'Firebase 초기화');
     if(fb && auth) return true;
     throw new Error('초기화 안 됨');
   }catch(e){
     console.warn('[POSIPAN] Firebase 연결 실패:', e);
-    toast('Firebase 연결 실패 — config 값 확인 후 재배포했는지 확인하세요 (F12 콘솔 참고)', 'warn');
+    toast('Firebase 연결 실패 — F12 콘솔을 확인하세요', 'warn');
     return false;
   }
 }
@@ -1188,7 +1177,6 @@ function finishLogin(nick){
 }
 
 async function googleLogin(){
-  /* ★ 핵심 수정: 연결 안 됐으면 지금 바로 연결 시도 (초기화가 늦었어도 작동) */
   const ready = await ensureFB();
   if(!ready) return;
   try{
@@ -1206,29 +1194,24 @@ async function googleLogin(){
     console.warn('[POSIPAN] Google 로그인 실패. 오류 코드:', code, e);
     if(code==='auth/popup-closed-by-user' || code==='auth/cancelled-popup-request') return;
     if(code==='auth/popup-blocked') toast('팝업이 차단되었어요. 차단 해제 후 다시 시도해주세요','warn');
-    else if(code==='auth/unauthorized-domain') toast('도메인 미등록 — Firebase 승인된 도메인에 배포 주소(https:// 없이)를 추가했는지 확인하세요','warn');
+    else if(code==='auth/unauthorized-domain') toast('도메인 미등록 — 승인된 도메인에 Vercel 주소를 https:// 없이 입력했는지 확인하세요','warn');
     else if(code==='auth/operation-not-allowed' || code==='auth/configuration-not-found') toast('Firebase 콘솔에서 Google 로그인을 사용 설정해주세요','warn');
-    else toast('Google 로그인에 실패했어요 (오류 코드: ' + (code || '알 수 없음') + ')','warn');
+    else toast('Google 로그인 실패 (' + (code || '알 수 없음') + ')','warn');
   }
 }
 
-/* 게스트 = Firebase 익명 로그인 */
 async function guestLogin(){
   const nick = $('#nickInput').value.trim();
   if(nick.length < 2){ toast('닉네임은 2자 이상 입력해주세요','warn'); return; }
-  if(TRY_FB){
-    const ready = await ensureFB();
-    if(!ready) return;
-    try{
-      await withTimeout(fb.au.signInAnonymously(auth), 8000, '게스트 로그인');
-      state.uid = auth.currentUser ? auth.currentUser.uid : state.uid;
-    }catch(e){
-      console.warn('[POSIPAN] 익명 로그인 실패. 오류 코드:', (e && e.code) || '', e);
-      toast('게스트 로그인 실패 — Firebase에서 익명 로그인을 켰는지 확인하세요','warn');
-      return;
-    }
-  } else {
-    state.uid = localUid();
+  const ready = await ensureFB();
+  if(!ready) return;
+  try{
+    await withTimeout(fb.au.signInAnonymously(auth), 8000, '게스트 로그인');
+    state.uid = auth.currentUser ? auth.currentUser.uid : state.uid;
+  }catch(e){
+    console.warn('[POSIPAN] 익명 로그인 실패. 오류 코드:', (e && e.code) || '', e);
+    toast('게스트 로그인 실패 — Firebase에서 익명 로그인을 켰는지 확인하세요','warn');
+    return;
   }
   finishLogin(nick);
 }
@@ -1246,7 +1229,6 @@ function renderUser(){
   }
 }
 
-/* 로그아웃 — 새로고침 없이 즉시 화면 반영 */
 function doLogout(){
   state.user = null;
   localStorage.removeItem('pp_nick');
@@ -1299,17 +1281,13 @@ function initIcons(){
 (async function boot(){
   initIcons();
   $$('.cemail').forEach(function(el){ el.textContent = CONTACT_EMAIL; });
-  if(TRY_FB){
-    try{
-      await withTimeout(initFB(), 10000, 'Firebase 초기화');
-      console.log('[POSIPAN] Firebase 연결 완료 ✓');
-    }catch(e){
-      console.warn('[POSIPAN] Firebase 초기화 실패:', e);
-      fb = null; auth = null;
-      toast('Firebase 연결 실패 — F12 콘솔의 [POSIPAN] 경고를 확인하세요', 'warn');
-    }
-  } else {
-    console.warn('[POSIPAN] firebaseConfig가 아직 기본값(YOUR_API_KEY)입니다! Firebase Console → 프로젝트 설정 → 내 앱 → Config를 복사해 붙여넣고, GitHub에 커밋·푸시(재배포)하세요.');
+  try{
+    await withTimeout(initFB(), 10000, 'Firebase 초기화');
+    console.log('[POSIPAN] Firebase 연결 완료 ✓ (posipanweb)');
+  }catch(e){
+    console.warn('[POSIPAN] Firebase 초기화 실패:', e);
+    fb = null; auth = null;
+    toast('Firebase 연결 실패 — F12 콘솔을 확인하세요', 'warn');
   }
   if(auth && auth.currentUser){
     state.uid = auth.currentUser.uid;
